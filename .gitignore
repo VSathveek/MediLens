@@ -1,1 +1,22 @@
 node_modules
+__pycache__/
+*.pyc
+.env
+.venv
+
+# Large local ML/data assets -- research artifacts, not part of the deployed
+# app. The production backend uses backend/data/ (small, Gemini-embedded
+# corpus) instead. See scripts/build_rag_corpus.py.
+biogpt_model/
+medlens_biobert/
+pubmedbert_ner_model/
+medilens_rag/pubmed_xml/
+medilens_rag/*.npy
+medilens_rag/*.faiss
+medilens_rag/pubmed_chunks.jsonl
+medilens_rag/pubmed_dataset.jsonl
+medilens_rag/pubmed_abstracts.txt
+medilens_rag/texts.json
+
+uploads/
+*.log
