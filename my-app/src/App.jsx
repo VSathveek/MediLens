@@ -1,30 +1,30 @@
-import { useState, useEffect, useRef } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
-function App() {
-  const [results, setResults] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [activeTab, setActiveTab] = useState('results')
-  const [conversation, setConversation] = useState([
-    {
-      role: 'assistant',
-      text: 'Hello, I am MediLens. How can I help you with your medical concern today?',
-      timestamp: new Date().toISOString(),
-    },
-  ])
-  const [systemPrompt, setSystemPrompt] = useState(
-    'You are a helpful, empathetic medical assistant. Answer only medical questions and politely decline general interest queries. Emphasize safety and consulting a healthcare provider.'
-  )
+const WELCOME_MESSAGE = {
+  role: 'assistant',
+  text: "Hi, I'm MediLens. Tell me about your symptoms, medications, or upload a prescription photo, and I'll help you understand it.",
+  timestamp: new Date().toISOString(),
+}
 
+const DEFAULT_SYSTEM_PROMPT =
+  'You are a helpful, empathetic medical assistant. Answer only medical questions and politely decline general interest queries. Emphasize safety and consulting a healthcare provider.'
+
+function App() {
+  const [conversation, setConversation] = useState([WELCOME_MESSAGE])
+  const [inputText, setInputText] = useState('')
+  const [loading, setLoading] = useState(false)
   const [isTyping, setIsTyping] = useState(false)
+  const [error, setError] = useState(null)
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
   const [showSettings, setShowSettings] = useState(false)
 
-  const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'
-  const apiBase = backendBase.replace(/\/api$/, '')
+  const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+  const apiBase = backendBase.replace(/\/$/, '')
 
   const chatEndRef = useRef(null)
+  const fileInputRef = useRef(null)
+  const textareaRef = useRef(null)
 
   const formatInlineBold = (text, keyPrefix = '') => {
     const parts = []
@@ -33,39 +33,17 @@ function App() {
     let match
 
     while ((match = boldRegex.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push(text.slice(lastIndex, match.index))
-      }
+      if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index))
       parts.push(<strong key={`${keyPrefix}-bold-${match.index}`}>{match[1]}</strong>)
       lastIndex = match.index + match[0].length
     }
-
-    if (lastIndex < text.length) {
-      parts.push(text.slice(lastIndex))
-    }
-
+    if (lastIndex < text.length) parts.push(text.slice(lastIndex))
     return parts
   }
 
-  // CLEAN THE AI RESPONSE
-  const cleanAssistantText = (text) => {
-    if (!text) return ''
-    // Remove leftover prefix text completely
-    const cleaned = text.replace(
-      /^(MediLens:)?\s*Here(?:'s| is) a rewritten version of the medical explanation in simple language for a patient:\s*/i,
-      ''
-    )
-    return cleaned.trim()
-  }
-
   const renderAssistantText = (rawText) => {
-    const cleanedText = cleanAssistantText(rawText)
-    if (!cleanedText) return null
-
-    const lines = cleanedText
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0)
+    if (!rawText) return null
+    const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
 
     const result = []
     let listItems = []
@@ -82,7 +60,7 @@ function App() {
     }
 
     lines.forEach((line, idx) => {
-      const bulletMatch = line.match(/^[\*\-\+]\s+(.+)$/)
+      const bulletMatch = line.match(/^[*\-+]\s+(.+)$/)
       if (bulletMatch) {
         listItems.push(
           <li className="assistant-list-item" key={`li-${idx}`}>
@@ -98,7 +76,6 @@ function App() {
         )
       }
     })
-
     flushList()
     return <>{result}</>
   }
@@ -116,160 +93,204 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [conversation, systemPrompt])
 
-  const handleProcessInput = async (input) => {
+  const appendAssistantReply = (data) => {
+    setConversation((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        text: data.answer || 'No response.',
+        sources: data.references || [],
+        timestamp: new Date().toISOString(),
+      },
+    ])
+  }
+
+  const appendAssistantError = (message) => {
+    setError(message)
+    setConversation((prev) => [
+      ...prev,
+      { role: 'assistant', text: 'Something went wrong. Please try again.', timestamp: new Date().toISOString() },
+    ])
+  }
+
+  const handleSend = async () => {
+    const text = inputText.trim()
+    if (!text || loading) return
+
+    setInputText('')
     setLoading(true)
     setIsTyping(true)
     setError(null)
-    setResults(null)
-
-    const userTime = new Date().toISOString()
-    const newMessage = { role: 'user', text: input, timestamp: userTime }
-
-    setConversation((prev) => [...prev, newMessage])
+    setConversation((prev) => [...prev, { role: 'user', text, timestamp: new Date().toISOString() }])
 
     try {
-      // Merge previous conversation for context
-      const fullQuestion = [...conversation, newMessage]
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
-        .join('\n\n')
-
       const res = await fetch(`${apiBase}/api/process`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: fullQuestion,
-          system_prompt: systemPrompt,
-        }),
+        body: JSON.stringify({ question: text, system_prompt: systemPrompt }),
       })
-
       if (!res.ok) {
-        const text = await res.text()
-        throw new Error(`Server error ${res.status}: ${text}`)
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Server error ${res.status}`)
       }
-
-      const data = await res.json()
-      const answer = data.answer || data.reasoning || data.medical_query || 'No response.'
-      const assistantText = Array.isArray(answer) ? answer.join('\n') : String(answer)
-
-      setConversation((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          text: assistantText,
-          sources: data.references || data.rag_results || [],
-          timestamp: new Date().toISOString(),
-        },
-      ])
-
-      setResults(data)
-      setActiveTab('results')
+      appendAssistantReply(await res.json())
     } catch (err) {
-      setError(err.message || 'Failed to process request')
-      setConversation((prev) => [
-        ...prev,
-        { role: 'assistant', text: 'Something went wrong. Try again.', timestamp: new Date().toISOString() },
-      ])
+      appendAssistantError(err.message)
     } finally {
       setLoading(false)
       setIsTyping(false)
     }
   }
 
-  const [inputText, setInputText] = useState('')
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || loading) return
 
-  const handleSend = () => {
-    const text = inputText.trim()
-    if (!text) return
-    handleProcessInput(text)
-    setInputText('')
+    setLoading(true)
+    setIsTyping(true)
+    setError(null)
+    setConversation((prev) => [
+      ...prev,
+      { role: 'user', text: `📎 Uploaded prescription image: ${file.name}`, timestamp: new Date().toISOString() },
+    ])
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch(`${apiBase}/api/upload`, { method: 'POST', body: formData })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Server error ${res.status}`)
+      }
+      appendAssistantReply(await res.json())
+    } catch (err) {
+      appendAssistantError(err.message)
+    } finally {
+      setLoading(false)
+      setIsTyping(false)
+    }
   }
 
   const handleNewChat = () => {
-    setConversation([
-      {
-        role: 'assistant',
-        text: 'Hello, I am MediLens. How can I help you with your medical concern today?',
-        timestamp: new Date().toISOString(),
-      },
-    ])
-    setResults(null)
+    setConversation([WELCOME_MESSAGE])
     setError(null)
     setInputText('')
     window.localStorage.removeItem('medilens_chat')
   }
 
+  const handleTextareaInput = (e) => {
+    setInputText(e.target.value)
+    const el = textareaRef.current
+    if (el) {
+      el.style.height = 'auto'
+      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+    }
+  }
+
+  const isFreshChat = conversation.length === 1
+
   return (
     <div className="app">
-      <div className="sidebar">
-        <div className="logo">
-          <div className="logo-icon"></div>
+      <header className="topbar">
+        <div className="wordmark">MediLens</div>
+        <div className="topbar-actions">
+          <button className="pill pill-ghost" onClick={() => setShowSettings((v) => !v)}>
+            {showSettings ? 'Hide settings' : 'Settings'}
+          </button>
+          <button className="pill pill-outline" onClick={handleNewChat}>
+            New chat
+          </button>
         </div>
+      </header>
 
-        <div className="newchat" onClick={handleNewChat}>
-          + New Chat
+      {showSettings && (
+        <div className="settings-panel">
+          <label htmlFor="system-prompt">Assistant persona / system prompt</label>
+          <textarea
+            id="system-prompt"
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            rows={3}
+          />
         </div>
+      )}
 
-        <div className="chatlist">
-          <div className="chatitem">Welcome</div>
-          <div className="chatitem">Medical help</div>
-          <div className="chatitem">Prescription review</div>
-        </div>
-      </div>
+      <main className="main">
+        {isFreshChat ? (
+          <div className="hero">
+            <h1 className="hero-title">Understand your health, clearly.</h1>
+            <p className="hero-subtitle">{WELCOME_MESSAGE.text}</p>
+          </div>
+        ) : (
+          <div className="messages">
+            {conversation.map((m, idx) => (
+              <div key={idx} className={`message message-${m.role}`}>
+                {m.role === 'assistant' && <div className="avatar">AI</div>}
+                <div className={m.role === 'user' ? 'bubble-user' : 'bubble-assistant'}>
+                  {m.role === 'assistant' ? renderAssistantText(m.text) : m.text}
 
-      <div className="main">
-        <div className="header">Medical AI Chat</div>
-
-        <div className="messages">
-          {conversation.map((m, idx) => (
-            <div key={idx} className="message">
-              <div className={`avatar ${m.role === 'user' ? 'user' : 'bot'}`}>
-                {m.role === 'user' ? 'U' : 'AI'}
+                  {m.sources?.length > 0 && (
+                    <div className="sources">
+                      <div className="sources-label">References</div>
+                      <div className="sources-list">
+                        {m.sources.map((src, sidx) => {
+                          const sourceText = typeof src === 'string' ? src : src?.text || JSON.stringify(src)
+                          const trimmed = sourceText.length > 180 ? `${sourceText.slice(0, 180)}...` : sourceText
+                          return (
+                            <div key={`src-${sidx}`} className="source-card">
+                              {trimmed}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
+            ))}
 
-              <div className="text">
-                <strong>{m.role === 'user' ? 'You' : 'MediLens'}:</strong>
-                {m.role === 'assistant' ? renderAssistantText(m.text) : ` ${m.text}`}
-
-                {m.sources?.length > 0 && (
-                  <div className="chat-sources">
-                    <strong>Sources:</strong>
-                    <ul>
-                      {m.sources.map((src, sidx) => {
-                        const sourceText =
-                          typeof src === 'string'
-                            ? src
-                            : src?.text || src?.snippet || JSON.stringify(src)
-                        const trimmed = sourceText.length > 170 ? `${sourceText.slice(0, 170)}...` : sourceText
-                        return (
-                          <li key={`src-${sidx}`} className="source-item">
-                            {trimmed}
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  </div>
-                )}
+            {isTyping && (
+              <div className="message message-assistant">
+                <div className="avatar">AI</div>
+                <div className="bubble-assistant typing-indicator">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
               </div>
-            </div>
-          ))}
+            )}
 
-          {isTyping && (
-            <div className="message typing">
-              <div className="avatar bot">AI</div>
-              <div className="text">Typing...</div>
-            </div>
-          )}
+            <div ref={chatEndRef} />
+          </div>
+        )}
 
-          <div ref={chatEndRef} />
-        </div>
+        {error && <div className="error-banner">{error}</div>}
 
         <div className="input-area">
-          <div className="inputbox">
+          <div className="input-shell">
+            <button
+              className="icon-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              title="Upload prescription image"
+              aria-label="Upload prescription image"
+            >
+              +
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={handleFileSelect}
+            />
             <textarea
+              ref={textareaRef}
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={handleTextareaInput}
               rows={1}
-              placeholder="Message AI..."
+              placeholder="Describe your symptoms, ask about a medication..."
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
@@ -277,19 +298,15 @@ function App() {
                 }
               }}
             />
-            <button
-              className="send"
-              onClick={handleSend}
-              disabled={loading || !inputText.trim()}
-            >
-              {loading ? 'Sending...' : 'Send'}
+            <button className="pill pill-send" onClick={handleSend} disabled={loading || !inputText.trim()}>
+              {loading ? 'Sending' : 'Send'}
             </button>
           </div>
           <div className="disclaimer">
-            AI responses may contain mistakes. Verify important information.
+            MediLens is an educational tool, not a substitute for professional medical advice.
           </div>
         </div>
-      </div>
+      </main>
     </div>
   )
 }
