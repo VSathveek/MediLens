@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MediLens RAG — Internals &amp; Interview Reference</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    /* Light — warm eggshell, honoring the MediLens brand */
+    --canvas: #fdfcfc;
+    --surface: #f5f3f1;
+    --surface-2: #faf9f8;
+    --border: #ebe8e4;
+    --ink: #1a1712;
+    --text: #2b2620;
+    --muted: #777169;
+    --faint: #a59f97;
+    --violet: #0447ff;   /* retrieval / offline path */
+    --violet-soft: #eaeeff;
+    --ember: #cc3a00;    /* generation / LLM path (darkened for contrast) */
+    --ember-soft: #fceee8;
+    --code-bg: #1c1a17;  /* deliberate single-treatment terminal panel */
+    --code-text: #e8e4dc;
+    --code-violet: #9db4ff;
+    --code-ember: #ff9d73;
+    --code-green: #9ecf9e;
+    --code-muted: #837c72;
+
+    --maxw: 1140px;
+    --readw: 680px;
+    --font-body: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --canvas: #14120f;
+      --surface: #1c1a16;
+      --surface-2: #211e19;
+      --border: #33302a;
+      --ink: #f5f3f1;
+      --text: #e7e3db;
+      --muted: #a59f97;
+      --faint: #6f6a62;
+      --violet: #7d99ff;
+      --violet-soft: #1c2438;
+      --ember: #ff7a45;
+      --ember-soft: #2e1d15;
+      --code-bg: #100f0d;
+      --code-text: #e8e4dc;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --canvas: #14120f;
+    --surface: #1c1a16;
+    --surface-2: #211e19;
+    --border: #33302a;
+    --ink: #f5f3f1;
+    --text: #e7e3db;
+    --muted: #a59f97;
+    --faint: #6f6a62;
+    --violet: #7d99ff;
+    --violet-soft: #1c2438;
+    --ember: #ff7a45;
+    --ember-soft: #2e1d15;
+    --code-bg: #100f0d;
+    --code-text: #e8e4dc;
+  }
+
+  :root[data-theme="light"] {
+    --canvas: #fdfcfc;
+    --surface: #f5f3f1;
+    --surface-2: #faf9f8;
+    --border: #ebe8e4;
+    --ink: #1a1712;
+    --text: #2b2620;
+    --muted: #777169;
+    --faint: #a59f97;
+    --violet: #0447ff;
+    --violet-soft: #eaeeff;
+    --ember: #cc3a00;
+    --ember-soft: #fceee8;
+    --code-bg: #1c1a17;
+    --code-text: #e8e4dc;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    background: var(--canvas);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .page {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 24px;
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    gap: 56px;
+    align-items: start;
+  }
+
+  /* ---------- Sidebar nav ---------- */
+  .toc {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 40px 0 40px;
+    border-right: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .toc-brand {
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-size: 15px;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+  .toc-sub {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 24px;
+  }
+  .toc a {
+    display: block;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 5px 12px 5px 14px;
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+    transition: color .15s, border-color .15s;
+    line-height: 1.35;
+  }
+  .toc a .num {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--faint);
+    margin-right: 8px;
+  }
+  .toc a:hover { color: var(--ink); }
+  .toc a.active {
+    color: var(--ink);
+    border-left-color: var(--violet);
+    font-weight: 500;
+  }
+  .toc a.active .num { color: var(--violet); }
+
+  .toc-back {
+    display: inline-block;
+    margin-bottom: 22px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .toc-back:hover { color: var(--violet); }
+
+  .theme-toggle {
+    margin-top: 28px;
+    margin-left: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+  }
+  .theme-toggle:hover { color: var(--ink); border-color: var(--faint); }
+
+  /* ---------- Content ---------- */
+  .content { padding: 40px 0 120px; min-width: 0; }
+
+  .hero { padding: 40px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 48px; }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--violet);
+    margin-bottom: 20px;
+  }
+  h1 {
+    font-size: clamp(34px, 5.5vw, 52px);
+    font-weight: 300;
+    letter-spacing: -0.03em;
+    line-height: 1.04;
+    color: var(--ink);
+    text-wrap: balance;
+    margin-bottom: 22px;
+  }
+  h1 b { font-weight: 600; }
+  .lede {
+    font-size: 19px;
+    line-height: 1.55;
+    color: var(--muted);
+    max-width: var(--readw);
+    margin-bottom: 34px;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 36px;
+  }
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 5px 11px;
+    border-radius: 999px;
+  }
+  .chip b { color: var(--ink); font-weight: 600; }
+
+  section { scroll-margin-top: 24px; padding-top: 40px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+  .sec-num {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--violet);
+    font-weight: 500;
+  }
+  h2 {
+    font-size: clamp(24px, 3.4vw, 31px);
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    line-height: 1.1;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    margin: 34px 0 12px;
+  }
+  .content p { max-width: var(--readw); margin: 14px 0; }
+  .content p.wide { max-width: none; }
+  .content ul, .content ol { max-width: var(--readw); margin: 14px 0 14px 22px; }
+  .content li { margin: 7px 0; }
+
+  a.inline { color: var(--violet); text-decoration: none; border-bottom: 1px solid var(--border); }
+  a.inline:hover { border-color: var(--violet); }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 5px;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  .callout {
+    max-width: var(--readw);
+    background: var(--violet-soft);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--violet);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 22px 0;
+    font-size: 15px;
+  }
+  .callout.ember { background: var(--ember-soft); border-left-color: var(--ember); }
+  .callout .tag {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--violet);
+    display: block;
+    margin-bottom: 5px;
+  }
+  .callout.ember .tag { color: var(--ember); }
+  .callout p { max-width: none; margin: 0; }
+
+  /* ---------- Code blocks (terminal treatment) ---------- */
+  .code-wrap { margin: 20px 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+  .code-bar {
+    background: var(--code-bg);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 9px 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    color: var(--code-muted);
+    display: flex;
+    justify-content: space-between;
+  }
+  .code-bar .lang { color: var(--code-violet); }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 18px 16px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.65;
+  }
+  pre .c { color: var(--code-muted); font-style: italic; }
+  pre .k { color: var(--code-violet); }
+  pre .s { color: var(--code-green); }
+  pre .f { color: var(--code-ember); }
+  pre .n { color: #d6b36b; }
+
+  /* ---------- Diagrams ---------- */
+  .diagram {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px 24px;
+    margin: 26px 0;
+    overflow-x: auto;
+  }
+  .diagram-cap {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-top: 14px;
+    text-align: center;
+  }
+
+  .flow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    min-width: min-content;
+    justify-content: center;
+  }
+  .node {
+    flex: 0 1 auto;
+    min-width: 128px;
+    max-width: 190px;
+    background: var(--canvas);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 13px 14px;
+    text-align: center;
+  }
+  .node .nlabel {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 6px;
+  }
+  .node .ntitle { font-size: 13.5px; font-weight: 600; color: var(--ink); line-height: 1.25; }
+  .node .nsub { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+  .node.violet { border-color: var(--violet); box-shadow: inset 0 0 0 1px var(--violet); }
+  .node.ember { border-color: var(--ember); box-shadow: inset 0 0 0 1px var(--ember); }
+  .arrow {
+    align-self: center;
+    flex: 0 0 auto;
+    width: 34px;
+    text-align: center;
+    color: var(--faint);
+    font-size: 18px;
+    line-height: 1;
+  }
+  .arrow.v { color: var(--violet); }
+  .arrow.e { color: var(--ember); }
+
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+
+  /* vertical pipeline */
+  .vflow { display: flex; flex-direction: column; align-items: center; gap: 0; }
+  .vnode {
+    width: 100%;
+    max-width: 560px;
+    background: var(--canvas);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 15px 18px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .vnode .step {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--violet);
+    border-radius: 7px;
+    min-width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+  .vnode.ember .step { background: var(--ember); }
+  .vnode .vtitle { font-weight: 600; color: var(--ink); font-size: 15px; }
+  .vnode .vbody { font-size: 13.5px; color: var(--muted); margin-top: 3px; }
+  .vnode .vbody code { font-size: 12px; }
+  .vconn { width: 2px; height: 18px; background: var(--border); }
+
+  /* ---------- Tables ---------- */
+  .table-wrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--border); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 11px 15px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    background: var(--surface);
+  }
+  tr:last-child td { border-bottom: none; }
+  td code { font-size: 12.5px; }
+  td.num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); white-space: nowrap; }
+
+  /* ---------- Q&A ---------- */
+  .qa { max-width: var(--readw); margin: 18px 0; }
+  details.q {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin: 10px 0;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  details.q[open] { background: var(--canvas); }
+  details.q summary {
+    cursor: pointer;
+    padding: 15px 18px;
+    font-weight: 500;
+    color: var(--ink);
+    list-style: none;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    font-size: 15.5px;
+  }
+  details.q summary::-webkit-details-marker { display: none; }
+  details.q summary .qmark {
+    font-family: var(--font-mono);
+    color: var(--violet);
+    font-size: 14px;
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+  details.q summary .caret { margin-left: auto; color: var(--faint); transition: transform .2s; flex: 0 0 auto; }
+  details.q[open] summary .caret { transform: rotate(90deg); }
+  details.q .answer { padding: 0 18px 18px 42px; color: var(--text); font-size: 15px; }
+  details.q .answer p { max-width: none; margin: 10px 0; }
+  details.q .answer p:first-child { margin-top: 0; }
+
+  .qa-controls { margin: 6px 0 4px; }
+  .qa-controls button {
+    background: none; border: none; color: var(--violet);
+    font-family: var(--font-mono); font-size: 12px; cursor: pointer; padding: 4px 0;
+  }
+  .qa-controls button:hover { text-decoration: underline; }
+
+  .kv { max-width: var(--readw); display: grid; grid-template-columns: 150px 1fr; gap: 2px 18px; margin: 18px 0; font-size: 14.5px; }
+  .kv dt { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); padding: 6px 0; }
+  .kv dd { padding: 6px 0; color: var(--text); border-bottom: 1px solid var(--border); }
+  .kv dt { border-bottom: 1px solid var(--border); }
+
+  footer {
+    border-top: 1px solid var(--border);
+    margin-top: 60px;
+    padding-top: 24px;
+    font-size: 13px;
+    color: var(--faint);
+    max-width: var(--readw);
+  }
+  footer code { font-size: 12px; }
+
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; margin: 8px 0 2px; font-size: 12.5px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .dot.v { background: var(--violet); }
+  .dot.e { background: var(--ember); }
+
+  /* ---------- Mobile ---------- */
+  .mobile-head { display: none; }
+  @media (max-width: 900px) {
+    .page { grid-template-columns: 1fr; gap: 0; }
+    .toc { display: none; }
+    .mobile-head {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 16px 0; border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; background: var(--canvas); z-index: 5;
+    }
+    .content { padding-top: 24px; }
+    .kv { grid-template-columns: 1fr; gap: 0; }
+    .kv dt { border-bottom: none; padding-bottom: 0; }
+    .kv dd { padding-top: 2px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <nav class="toc" aria-label="Contents">
+    <a class="toc-back" href="/">← back to MediLens</a>
+    <div class="toc-brand">MediLens RAG</div>
+    <div class="toc-sub">Internals reference</div>
+    <a href="#overview"><span class="num">00</span>System overview</a>
+    <a href="#corpus"><span class="num">01</span>The corpus &amp; data</a>
+    <a href="#ingestion"><span class="num">02</span>Ingestion pipeline</a>
+    <a href="#tfidf"><span class="num">03</span>TF-IDF, low-level</a>
+    <a href="#retrieval"><span class="num">04</span>Retrieval at query time</a>
+    <a href="#lifecycle"><span class="num">05</span>Full request lifecycle</a>
+    <a href="#decisions"><span class="num">06</span>Design decisions</a>
+    <a href="#perf"><span class="num">07</span>Complexity &amp; scaling</a>
+    <a href="#failure"><span class="num">08</span>Failure modes</a>
+    <a href="#interview"><span class="num">09</span>Interview Q&amp;A</a>
+    <button class="theme-toggle" id="themeBtn" type="button">◐ theme</button>
+  </nav>
+
+  <main class="content">
+    <div class="mobile-head">
+      <div>
+        <div class="toc-brand">MediLens RAG</div>
+        <div class="toc-sub">Internals reference</div>
+      </div>
+      <button class="theme-toggle" id="themeBtnMobile" type="button">◐ theme</button>
+    </div>
+
+    <header class="hero">
+      <div class="eyebrow">Retrieval-Augmented Generation · Engineering Deep-Dive</div>
+      <h1>How MediLens <b>retrieves</b> medical evidence and <b>grounds</b> every answer.</h1>
+      <p class="lede">
+        A complete walk-through of the RAG subsystem — from the offline ingestion
+        pipeline that turns 262k raw PubMed abstracts into a 35&nbsp;MB searchable
+        index, through the TF-IDF math that ranks documents, to the two-call
+        request lifecycle that keeps the whole thing running on a free 512&nbsp;MB
+        instance. Written so you can answer any question about it.
+      </p>
+      <div class="meta-row">
+        <span class="chip">Retrieval: <b>TF-IDF + cosine</b></span>
+        <span class="chip">Corpus: <b>20,000 chunks</b></span>
+        <span class="chip">Generation: <b>Gemini 2.5 Flash</b></span>
+        <span class="chip">Index: <b>scikit-learn sparse</b></span>
+        <span class="chip">Runtime: <b>0 retrieval API calls</b></span>
+      </div>
+      <div class="legend">
+        <span><span class="dot v"></span> Retrieval path (local, offline-built)</span>
+        <span><span class="dot e"></span> Generation path (Gemini API)</span>
+      </div>
+    </header>
+
+    <!-- 00 -->
+    <section id="overview">
+      <div class="sec-head"><span class="sec-num">00</span><h2>System overview</h2></div>
+      <p>
+        RAG stands for <strong>Retrieval-Augmented Generation</strong>. Instead of
+        asking the language model to answer from its own memory (where it can
+        hallucinate), MediLens first <em>retrieves</em> relevant passages from a
+        curated corpus of biomedical literature, then hands those passages to the
+        model as grounding context. The answer is written by the LLM but anchored
+        to real PubMed text, and the same passages are returned to the user as
+        citations.
+      </p>
+      <p>The system splits cleanly into two halves:</p>
+      <ul>
+        <li><strong>Offline (build once):</strong> an ingestion pipeline curates and vectorizes the corpus into three artifacts committed to the repo.</li>
+        <li><strong>Online (per request):</strong> a FastAPI service loads those artifacts into memory and serves ranked retrieval with a single sparse matrix multiply — no network call.</li>
+      </ul>
+
+      <div class="diagram">
+        <div class="flow">
+          <div class="node"><div class="nlabel">Client</div><div class="ntitle">Browser</div><div class="nsub">React / Vercel</div></div>
+          <div class="arrow">→</div>
+          <div class="node"><div class="nlabel">Service</div><div class="ntitle">FastAPI</div><div class="nsub">Render · Docker</div></div>
+          <div class="arrow e">→</div>
+          <div class="node ember"><div class="nlabel">Rewrite + triage</div><div class="ntitle">Gemini</div><div class="nsub">call #1</div></div>
+          <div class="arrow v">→</div>
+          <div class="node violet"><div class="nlabel">Retrieve</div><div class="ntitle">TF-IDF store</div><div class="nsub">in-memory · local</div></div>
+          <div class="arrow e">→</div>
+          <div class="node ember"><div class="nlabel">Answer</div><div class="ntitle">Gemini</div><div class="nsub">call #2</div></div>
+        </div>
+        <div class="diagram-cap">High-level request flow — two LLM calls, one local retrieval</div>
+      </div>
+
+      <p>
+        The rest of this document zooms into the violet box (retrieval) and the
+        pipeline that builds it, then covers the tradeoffs an interviewer will
+        probe.
+      </p>
+    </section>
+
+    <!-- 01 -->
+    <section id="corpus">
+      <div class="sec-head"><span class="sec-num">01</span><h2>The corpus &amp; data</h2></div>
+      <p>
+        The knowledge source is a large dump of PubMed abstract chunks. Only a
+        curated subset is actually served; the raw dump stays local as a research
+        artifact and never ships to production.
+      </p>
+      <div class="kv">
+        <dt>Raw source</dt><dd><code>medilens_rag/texts.json</code> — a JSON array of <strong>262,306</strong> PubMed abstract chunks (~245 MB, gitignored)</dd>
+        <dt>Avg chunk size</dt><dd>~1,100 characters of clinical/biomedical prose per chunk</dd>
+        <dt>Served subset</dt><dd><strong>20,000</strong> chunks after filtering, deduping, and sampling</dd>
+        <dt>Filter window</dt><dd>Keep chunks between <code>150</code> and <code>2,200</code> characters</dd>
+        <dt>Determinism</dt><dd>Shuffle seeded with <code>SEED = 42</code> so the build is reproducible</dd>
+      </div>
+      <p>The build emits exactly three files into <code>backend/data/</code>, and these are the <em>only</em> data the running service needs:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Artifact</th><th>What it is</th><th>Size</th></tr></thead>
+          <tbody>
+            <tr><td><code>rag_vectorizer.pkl</code></td><td>The fitted <code>TfidfVectorizer</code> — vocabulary + IDF weights. Used to turn a query string into a vector in the same space as the documents.</td><td class="num">2.6 MB</td></tr>
+            <tr><td><code>rag_matrix.npz</code></td><td>The document–term matrix: one pre-computed TF-IDF row per chunk, stored as a SciPy sparse (CSR) matrix.</td><td class="num">13 MB</td></tr>
+            <tr><td><code>rag_corpus.json</code></td><td>The chunk texts in the same row order as the matrix, so a matched row index maps back to readable text.</td><td class="num">19 MB</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <span class="tag">Why three separate files</span>
+        <p>The vectorizer <em>transforms</em> queries, the matrix holds the pre-computed document vectors so nothing is re-embedded at request time, and the corpus is the index→text lookup for building context and citations. Splitting them keeps each concern independent and each file small enough to commit directly — no Git LFS, no runtime download.</p>
+      </div>
+    </section>
+
+    <!-- 02 -->
+    <section id="ingestion">
+      <div class="sec-head"><span class="sec-num">02</span><h2>Ingestion pipeline</h2></div>
+      <p class="wide">
+        The whole pipeline lives in <code>scripts/build_rag_corpus.py</code> and runs
+        <strong>offline, on a laptop, in seconds</strong>. It never runs in production
+        and needs no API key. Run it with
+        <code>python scripts/build_rag_corpus.py --target 20000</code>.
+      </p>
+
+      <div class="diagram">
+        <div class="vflow">
+          <div class="vnode violet"><div class="step">1</div><div><div class="vtitle">Load raw chunks</div><div class="vbody">Read all 262,306 entries from <code>texts.json</code> into memory.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">2</div><div><div class="vtitle">Filter by length</div><div class="vbody">Drop chunks shorter than 150 or longer than 2,200 chars — removes fragments and page-scale noise that hurt TF-IDF weighting.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">3</div><div><div class="vtitle">Deduplicate</div><div class="vbody">A <code>set</code> membership check drops exact-duplicate chunks so no passage is over-represented.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">4</div><div><div class="vtitle">Shuffle &amp; sample</div><div class="vbody">Seeded shuffle (<code>Random(42)</code>), then take the first <code>--target</code> (20,000) — an unbiased random subset that fits in RAM.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">5</div><div><div class="vtitle">Fit TF-IDF</div><div class="vbody"><code>TfidfVectorizer.fit_transform(chunks)</code> learns the vocabulary + IDF and produces the 20,000 × 60,000 document–term matrix in one pass.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">6</div><div><div class="vtitle">Persist artifacts</div><div class="vbody">Pickle the vectorizer, <code>save_npz</code> the sparse matrix, dump the corpus JSON — all into <code>backend/data/</code>.</div></div></div>
+        </div>
+        <div class="diagram-cap">Offline ingestion — build once, commit, never re-run at request time</div>
+      </div>
+
+      <div class="code-wrap">
+        <div class="code-bar"><span>scripts/build_rag_corpus.py</span><span class="lang">python</span></div>
+<pre><span class="c"># --- steps 2-4: filter, dedupe, seeded sample ---</span>
+<span class="k">def</span> <span class="f">select_chunks</span>(target):
+    texts = json.load(open(SOURCE_TEXTS, encoding=<span class="s">"utf-8"</span>))
+    seen, candidates = <span class="k">set</span>(), []
+    <span class="k">for</span> t <span class="k">in</span> texts:
+        t = t.strip()
+        <span class="k">if</span> <span class="k">not</span> (<span class="n">150</span> &lt;= <span class="k">len</span>(t) &lt;= <span class="n">2200</span>):   <span class="c"># length filter</span>
+            <span class="k">continue</span>
+        <span class="k">if</span> t <span class="k">in</span> seen:                        <span class="c"># dedupe</span>
+            <span class="k">continue</span>
+        seen.add(t); candidates.append(t)
+    random.Random(<span class="n">42</span>).shuffle(candidates)      <span class="c"># deterministic</span>
+    <span class="k">return</span> candidates[:target]
+
+<span class="c"># --- step 5: fit the index ---</span>
+vectorizer = <span class="f">TfidfVectorizer</span>(
+    max_features=<span class="n">60000</span>,      <span class="c"># cap vocabulary to top-60k terms</span>
+    ngram_range=(<span class="n">1</span>, <span class="n">2</span>),      <span class="c"># unigrams + bigrams</span>
+    stop_words=<span class="s">"english"</span>,     <span class="c"># drop "the", "of", "and"...</span>
+    sublinear_tf=<span class="k">True</span>,         <span class="c"># 1 + log(tf), dampens repeats</span>
+    min_df=<span class="n">2</span>,                <span class="c"># term must appear in >= 2 docs</span>
+)
+matrix = vectorizer.<span class="f">fit_transform</span>(chunks)   <span class="c"># (20000, 60000) sparse</span>
+
+<span class="c"># --- step 6: persist ---</span>
+pickle.dump(vectorizer, <span class="k">open</span>(VECTORIZER_OUT, <span class="s">"wb"</span>))
+sparse.<span class="f">save_npz</span>(MATRIX_OUT, matrix)
+json.dump(chunks, <span class="k">open</span>(CORPUS_OUT, <span class="s">"w"</span>))</pre>
+      </div>
+
+      <h3>Why each vectorizer parameter matters</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Parameter</th><th>Value</th><th>Reasoning</th></tr></thead>
+          <tbody>
+            <tr><td><code>ngram_range</code></td><td class="num">(1, 2)</td><td>Unigrams catch single terms (<em>metformin</em>); bigrams capture medical phrases (<em>blood pressure</em>, <em>heart failure</em>) that carry meaning single words lose.</td></tr>
+            <tr><td><code>max_features</code></td><td class="num">60,000</td><td>Keeps only the 60k most frequent terms — bounds matrix width and memory, discards the long tail of rare noise.</td></tr>
+            <tr><td><code>min_df</code></td><td class="num">2</td><td>A term must appear in at least 2 documents. Kills one-off typos/OCR garbage that would otherwise become useless vocabulary columns.</td></tr>
+            <tr><td><code>sublinear_tf</code></td><td class="num">True</td><td>Uses <code>1 + log(tf)</code> instead of raw counts, so a word appearing 10× isn't treated as 10× more important than appearing once.</td></tr>
+            <tr><td><code>stop_words</code></td><td>"english"</td><td>Removes function words that appear everywhere and carry no retrieval signal.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 03 -->
+    <section id="tfidf">
+      <div class="sec-head"><span class="sec-num">03</span><h2>TF-IDF, at the low level</h2></div>
+      <p>
+        TF-IDF (Term Frequency – Inverse Document Frequency) scores how important a
+        term is to a specific document relative to the whole corpus. A term gets a
+        high weight when it appears often <em>in this document</em> but rarely
+        <em>across all documents</em> — which is exactly what makes a word
+        distinctive.
+      </p>
+
+      <h3>The weight of one term in one document</h3>
+      <p class="wide">With the settings above, the weight scikit-learn computes is:</p>
+      <div class="callout">
+        <span class="tag">Formula</span>
+        <p style="font-family:var(--font-mono);font-size:14px;line-height:1.9">
+          tf&nbsp;=&nbsp;1&nbsp;+&nbsp;log(count)&nbsp;&nbsp;<span style="color:var(--muted)">(sublinear)</span><br>
+          idf&nbsp;=&nbsp;log((1&nbsp;+&nbsp;N)&nbsp;/&nbsp;(1&nbsp;+&nbsp;df))&nbsp;+&nbsp;1&nbsp;&nbsp;<span style="color:var(--muted)">(smoothed)</span><br>
+          weight&nbsp;=&nbsp;tf&nbsp;×&nbsp;idf&nbsp;&nbsp;→&nbsp;&nbsp;row&nbsp;L2-normalized
+        </p>
+      </div>
+      <p>
+        Where <code>N</code> is the number of documents (20,000) and <code>df</code>
+        is how many of them contain the term. After weighting, each document row is
+        <strong>L2-normalized</strong> (scaled to unit length). That normalization
+        is the key detail that makes scoring cheap — see below.
+      </p>
+
+      <h3>Documents become vectors in a shared space</h3>
+      <p>
+        Every document is a point in a 60,000-dimensional space (one dimension per
+        vocabulary term), but almost all coordinates are zero — a typical abstract
+        uses only a few hundred distinct terms. That's why the matrix is stored
+        <strong>sparse</strong>: it holds only the non-zero entries, turning what
+        would be a 20,000 × 60,000 = 1.2-billion-cell dense array into ~13&nbsp;MB.
+      </p>
+
+      <h3>Similarity = cosine = a dot product</h3>
+      <p>
+        Relevance between a query and a document is their <strong>cosine
+        similarity</strong> — the cosine of the angle between their vectors,
+        ranging 0 (nothing in common) to 1 (identical direction). Cosine is:
+      </p>
+      <div class="callout">
+        <span class="tag">Why the code is just a matrix multiply</span>
+        <p>cosine(a, b) = (a · b) / (‖a‖‖b‖). Because both document and query vectors are already <strong>L2-normalized</strong> (‖a‖ = ‖b‖ = 1), the denominator is 1, so <strong>cosine similarity collapses to a plain dot product</strong>. Scoring all 20,000 documents is therefore one sparse matrix × vector product: <code>matrix @ query.T</code>.</p>
+      </div>
+    </section>
+
+    <!-- 04 -->
+    <section id="retrieval">
+      <div class="sec-head"><span class="sec-num">04</span><h2>Retrieval at query time</h2></div>
+      <p class="wide">
+        At runtime the <code>RagStore</code> (in <code>backend/app/rag.py</code>) loads the
+        three artifacts <strong>once at process startup</strong> and keeps them in
+        memory for the life of the container. Every search reuses them.
+      </p>
+
+      <div class="code-wrap">
+        <div class="code-bar"><span>backend/app/rag.py</span><span class="lang">python</span></div>
+<pre><span class="k">def</span> <span class="f">search</span>(self, query, top_k):
+    <span class="k">if</span> <span class="k">not</span> self.ready:
+        <span class="k">return</span> []
+    query_vec = self._vectorizer.<span class="f">transform</span>([query])   <span class="c"># 1) query → TF-IDF vector</span>
+    scores = (self._matrix @ query_vec.T).toarray().ravel()  <span class="c"># 2) cosine vs every doc</span>
+    <span class="k">if</span> <span class="k">not</span> scores.any():                             <span class="c"># no term overlap at all</span>
+        <span class="k">return</span> []
+    top_indices = scores.argsort()[::-<span class="n">1</span>][:top_k]     <span class="c"># 3) rank, take top-k</span>
+    <span class="k">return</span> [<span class="f">RagHit</span>(text=self._corpus[i], score=<span class="k">float</span>(scores[i]))
+            <span class="k">for</span> i <span class="k">in</span> top_indices <span class="k">if</span> scores[i] &gt; <span class="n">0</span>]  <span class="c"># drop zero-score</span></pre>
+      </div>
+
+      <div class="diagram">
+        <div class="vflow">
+          <div class="vnode violet"><div class="step">1</div><div><div class="vtitle">Vectorize the query</div><div class="vbody"><code>vectorizer.transform([query])</code> applies the <em>same</em> learned vocabulary + IDF, placing the query in the identical 60k-dim space as the documents. Terms not in the vocabulary are silently ignored.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">2</div><div><div class="vtitle">Score against all documents</div><div class="vbody"><code>matrix @ query.T</code> — one sparse multiply produces a similarity score for all 20,000 documents at once. Sub-millisecond.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">3</div><div><div class="vtitle">Rank &amp; select top-k</div><div class="vbody"><code>argsort()[::-1][:top_k]</code> sorts descending and takes the best <code>top_k = 5</code>; anything with a zero score (no shared terms) is dropped.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode ember"><div class="step">4</div><div><div class="vtitle">Feed the generator</div><div class="vbody">The pipeline keeps the top <code>3</code> hits, truncates each to <code>500</code> chars, joins them into a context block, and passes it to Gemini as grounding. The same hits become the citations shown to the user.</div></div></div>
+        </div>
+        <div class="diagram-cap">Query-time retrieval — from raw text to ranked, grounded context</div>
+      </div>
+
+      <div class="callout ember">
+        <span class="tag">The query is rewritten first</span>
+        <p>Retrieval doesn't run on the user's raw sentence. Gemini's triage call rewrites <em>"I've had a cough and mild fever for three days"</em> into keyword-dense medical terms like <em>"persistent cough, mild fever, respiratory infection"</em>. Lexical retrieval like TF-IDF matches on shared words, so a keyword query overlaps far better with terse abstract text than conversational phrasing does.</p>
+      </div>
+    </section>
+
+    <!-- 05 -->
+    <section id="lifecycle">
+      <div class="sec-head"><span class="sec-num">05</span><h2>Full request lifecycle</h2></div>
+      <p class="wide">
+        Putting retrieval back in context — here is everything that happens for one
+        <code>POST /api/process</code>, orchestrated by <code>backend/app/pipeline.py</code>.
+      </p>
+      <div class="diagram">
+        <div class="vflow">
+          <div class="vnode ember"><div class="step">1</div><div><div class="vtitle">Triage + rewrite + NER — Gemini call #1</div><div class="vbody">One structured-JSON call returns <code>in_scope</code>, a <code>rewritten_query</code>, and extracted entities (symptoms, medications, conditions, body parts). Temperature 0.1 for consistency; a Pydantic <code>response_schema</code> forces valid JSON.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode"><div class="step">2</div><div><div class="vtitle">Scope gate</div><div class="vbody">If <code>in_scope</code> is false, return a polite refusal immediately — <strong>no retrieval, no second LLM call</strong>. This short-circuit saves latency and quota on off-topic questions.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode violet"><div class="step">3</div><div><div class="vtitle">Retrieve — local, no API</div><div class="vbody"><code>rag_store.search(rewritten_query, top_k=5)</code>, then keep the top 3 as context.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode ember"><div class="step">4</div><div><div class="vtitle">Generate answer — Gemini call #2</div><div class="vbody">The question + retrieved excerpts + system prompt go to Gemini (temperature 0.4) to write a patient-friendly, grounded explanation.</div></div></div>
+          <div class="vconn"></div>
+          <div class="vnode"><div class="step">5</div><div><div class="vtitle">Assemble response</div><div class="vbody">Return <code>answer</code>, flattened <code>entities</code>, and <code>references</code> (the retrieved passages + their similarity scores) as JSON to the frontend.</div></div></div>
+        </div>
+        <div class="diagram-cap">Two Gemini calls for an in-scope question · zero for out-of-scope</div>
+      </div>
+    </section>
+
+    <!-- 06 -->
+    <section id="decisions">
+      <div class="sec-head"><span class="sec-num">06</span><h2>Design decisions &amp; tradeoffs</h2></div>
+
+      <h3>Why TF-IDF instead of dense vector embeddings?</h3>
+      <p>
+        The original design used Gemini's embedding API with a FAISS index. In
+        practice the <strong>free-tier embedding quota was exhausted almost
+        immediately</strong> — and critically, embeddings would be needed on
+        <em>every</em> query to vectorize the user's search, so retrieval would
+        break for real users after a handful of requests per day. TF-IDF removes
+        that dependency entirely.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>Dense embeddings + FAISS</th><th>TF-IDF (chosen)</th></tr></thead>
+          <tbody>
+            <tr><td>Runtime API calls</td><td>1 per query (embed the query)</td><td><strong>0</strong></td></tr>
+            <tr><td>Rate-limit risk</td><td>High — breaks on free tier</td><td>None</td></tr>
+            <tr><td>Memory footprint</td><td>Larger dense vectors</td><td>~13 MB sparse — fits 512 MB</td></tr>
+            <tr><td>Match type</td><td>Semantic (meaning)</td><td>Lexical (shared terms)</td></tr>
+            <tr><td>Cold start</td><td>Load index + model</td><td>Load 35 MB, no model</td></tr>
+            <tr><td>Best for</td><td>Paraphrase / synonym recall</td><td>Terminology-dense text</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <span class="tag">The honest tradeoff</span>
+        <p>TF-IDF is lexical: it can't match <em>"heart attack"</em> to <em>"myocardial infarction"</em> unless the query rewrite bridges them. That's a real limitation. It's mitigated here by the LLM query-rewrite step (which tends to emit canonical medical terms) and is an acceptable price for a retriever that is free, dependency-free, and always available — which a broken embedding retriever is not. The LLM-based rewrite is doing some of the semantic lifting that embeddings would otherwise provide.</p>
+      </div>
+
+      <h3>Why build the index offline and commit it?</h3>
+      <p>
+        Fitting the vectorizer at container startup would slow every cold start and
+        make deploys non-deterministic. Building offline means the exact same
+        index ships everywhere, startup only has to <code>load</code> (not compute),
+        and the artifacts are small enough to live in git.
+      </p>
+
+      <h3>Why load into memory once (singleton)?</h3>
+      <p>
+        <code>get_rag_store()</code> is a lazy singleton — the 35&nbsp;MB is read from
+        disk on first use and reused for every subsequent request. Re-reading per
+        request would add disk I/O and deserialization latency to every call.
+      </p>
+    </section>
+
+    <!-- 07 -->
+    <section id="perf">
+      <div class="sec-head"><span class="sec-num">07</span><h2>Complexity &amp; scaling</h2></div>
+      <div class="kv">
+        <dt>Build time</dt><dd>Seconds — one <code>fit_transform</code> pass over 20,000 chunks, offline</dd>
+        <dt>Query latency</dt><dd>Sub-millisecond for the sparse matmul; total request time is dominated by the two Gemini calls, not retrieval</dd>
+        <dt>Query cost</dt><dd>O(nnz) — proportional to non-zero entries, i.e. corpus size × avg terms/doc</dd>
+        <dt>Memory</dt><dd>~13 MB matrix + 2.6 MB vectorizer + 19 MB corpus text, all resident</dd>
+        <dt>Ranking</dt><dd>O(N log N) argsort over N = 20,000 scores — trivial</dd>
+      </div>
+      <p>
+        This is an exhaustive (<em>brute-force</em>) search — every query is scored
+        against every document. That's perfectly fine up to roughly 100k–1M
+        documents. Beyond that, the linear scan becomes the bottleneck and you'd
+        move to an approximate nearest-neighbor index (FAISS, HNSW) or a
+        purpose-built search engine, and likely shard the corpus. At MediLens's
+        scale, brute force is simpler and fast enough.
+      </p>
+      <div class="callout ember">
+        <span class="tag">Note on cold starts</span>
+        <p>On Render's free tier the service spins down after inactivity. The first request after idling pays a cold-start cost: the container boots and the <code>RagStore</code> loads its 35&nbsp;MB into memory before serving. Subsequent requests are warm and fast. This is infrastructure behavior, not a bug in retrieval.</p>
+      </div>
+    </section>
+
+    <!-- 08 -->
+    <section id="failure">
+      <div class="sec-head"><span class="sec-num">08</span><h2>Failure modes &amp; hardening</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Scenario</th><th>Current behavior</th><th>Improvement path</th></tr></thead>
+          <tbody>
+            <tr><td>Query shares no vocabulary with any doc</td><td>Scores are all zero → returns empty list; generator answers from question alone (no grounding)</td><td>Hybrid retrieval or a fallback semantic pass</td></tr>
+            <tr><td>Synonym / paraphrase mismatch</td><td>Missed by lexical match</td><td>Add BM25 + dense hybrid; add a cross-encoder reranker</td></tr>
+            <tr><td>Artifacts missing on disk</td><td><code>RagStore</code> logs a warning and disables retrieval gracefully (service still answers)</td><td>Startup health assertion / CI check</td></tr>
+            <tr><td>Gemini rate-limited / down</td><td>Client retries with exponential backoff (4 attempts)</td><td>Circuit breaker + cached responses</td></tr>
+            <tr><td>Abuse / quota burn</td><td>Per-IP rate limits (<code>15/min</code> process, <code>5/min</code> upload) via slowapi</td><td>Auth + per-user quotas</td></tr>
+            <tr><td>Stale corpus</td><td>Static until manually rebuilt</td><td>Scheduled re-ingestion job</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 09 -->
+    <section id="interview">
+      <div class="sec-head"><span class="sec-num">09</span><h2>Interview Q&amp;A</h2></div>
+      <p class="wide">The questions an interviewer is most likely to ask about this system, with tight answers. Click to expand.</p>
+      <div class="qa-controls">
+        <button type="button" id="expandAll">expand all</button> ·
+        <button type="button" id="collapseAll">collapse all</button>
+      </div>
+      <div class="qa">
+
+        <details class="q"><summary><span class="qmark">Q</span><span>What is RAG and why use it in a medical app?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>RAG = Retrieval-Augmented Generation. Rather than trust the LLM's parametric memory, you retrieve relevant passages from a trusted corpus and give them to the model as context. In a medical setting this matters twice over: it <strong>reduces hallucination</strong> by grounding answers in real PubMed literature, and it lets you <strong>show citations</strong> so users can see the evidence. It also means you can update knowledge by changing the corpus, without retraining a model.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>Walk me through what happens from user question to answer.</span><span class="caret">›</span></summary>
+          <div class="answer"><p>One Gemini call triages the question (in-scope?), rewrites it into medical keywords, and extracts entities. If out of scope, we refuse immediately. Otherwise we vectorize the rewritten query with the pre-fitted TF-IDF vectorizer, score it against all documents with a sparse matrix multiply, take the top 5 (keep top 3 for context), and pass those excerpts plus the question to a second Gemini call that writes the grounded answer. We return the answer, entities, and the passages as citations.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>Why TF-IDF instead of vector embeddings?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>The embedding approach needed an API call on every query to vectorize the user's search, and the free-tier quota was exhausted almost instantly — so retrieval would break for real users. TF-IDF runs fully locally with scikit-learn: zero API calls, no rate limit, ~13&nbsp;MB sparse index that fits a 512&nbsp;MB instance. The tradeoff is that TF-IDF is lexical, not semantic — but biomedical text is terminology-dense, and the LLM query-rewrite step supplies canonical terms, which recovers much of the semantic benefit.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>What similarity metric do you use, and why is scoring just a matrix multiply?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>Cosine similarity. Cosine is the dot product divided by the product of the vectors' magnitudes. scikit-learn L2-normalizes both the document rows and the transformed query to unit length, so both magnitudes are 1 and the denominator vanishes — cosine reduces to a plain dot product. That's why scoring every document is a single sparse <code>matrix @ query.T</code> operation.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>Why rewrite the query with the LLM before retrieving?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>Lexical retrieval matches on shared words. A conversational sentence (<em>"I feel dizzy when I stand up"</em>) shares few exact terms with a terse abstract. Rewriting it to medical keywords (<em>"orthostatic hypotension, dizziness, postural"</em>) dramatically improves term overlap and therefore retrieval quality. The rewrite is effectively doing lightweight query expansion / normalization.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>Why is the document matrix stored sparse?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>The vocabulary is 60,000 terms but any single abstract uses only a few hundred, so ~99% of every row is zero. A dense 20,000 × 60,000 matrix would be 1.2 billion floats (~9&nbsp;GB); the sparse CSR representation stores only non-zeros and is ~13&nbsp;MB. Sparse also makes the matmul cheap because it skips all the zeros.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>What do <code>ngram_range=(1,2)</code>, <code>min_df=2</code>, and <code>sublinear_tf</code> do?</span><span class="caret">›</span></summary>
+          <div class="answer"><p><strong>ngram (1,2):</strong> index both single words and adjacent word pairs, so phrases like <em>"blood pressure"</em> become their own features. <strong>min_df=2:</strong> ignore any term that appears in fewer than 2 documents — removes typos and OCR noise. <strong>sublinear_tf:</strong> use <code>1 + log(count)</code> instead of raw counts so a word appearing many times doesn't dominate linearly.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>Is the index built at runtime? How is it deployed?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>No — it's built offline by <code>scripts/build_rag_corpus.py</code> and the three artifacts (vectorizer, matrix, corpus) are committed to the repo. At runtime the service only <em>loads</em> them, once, into a singleton held in memory. This keeps cold starts fast and deploys deterministic.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>How does it scale? What breaks at 10M documents?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>Retrieval is currently brute-force: every query is scored against every document, which is fine to roughly 100k–1M docs. Past that the linear scan dominates and you'd switch to an approximate nearest-neighbor index (FAISS/HNSW) or a search engine, shard the corpus, and possibly move the index off-process. Memory also grows with corpus size, so you'd stop holding the full text in RAM and fetch it lazily.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>How do you stop the model from inventing citations?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>The citations are not generated by the LLM — they are the exact passages the retriever returned, with their similarity scores, assembled in code. The model only writes prose grounded in that context. So the references always correspond to real corpus entries, independent of what the model says.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>What happens for an out-of-scope or empty-match query?</span><span class="caret">›</span></summary>
+          <div class="answer"><p><strong>Out of scope:</strong> the triage call flags <code>in_scope=false</code> and we return a polite refusal before doing any retrieval or second LLM call — saving latency and quota. <strong>No term overlap:</strong> all scores are zero, <code>search</code> returns an empty list, and the generator answers from the question alone without grounding (a known limitation).</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>How would you improve retrieval quality next?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>Add a hybrid retriever (BM25 for lexical + a dense model for semantic, fused with reciprocal-rank fusion), then a cross-encoder reranker over the top candidates for precision. Add chunk overlap so context isn't cut mid-idea, grow the corpus beyond the 20k sample, and cache frequent queries. If budget allowed a paid embedding tier, embeddings would restore synonym/paraphrase recall that TF-IDF misses.</p></div>
+        </details>
+
+        <details class="q"><summary><span class="qmark">Q</span><span>Why keep only the top 3 and truncate to 500 characters?</span><span class="caret">›</span></summary>
+          <div class="answer"><p>Context budget and signal-to-noise. Retrieving 5 gives a small ranking margin, but stuffing all of them (and their full length) into the prompt adds tokens, cost, and lower-relevance text that can distract the model. Top 3 truncated to 500 chars keeps the grounding tight and the most relevant while staying cheap.</p></div>
+        </details>
+
+      </div>
+    </section>
+
+    <footer>
+      <p>MediLens RAG internals · retrieval in <code>backend/app/rag.py</code> · pipeline in <code>backend/app/pipeline.py</code> · ingestion in <code>scripts/build_rag_corpus.py</code>. Figures reflect a <code>--target 20000</code> build.</p>
+    </footer>
+  </main>
+</div>
+
+<script>
+  (function () {
+    // Theme toggle — override the media-query default in both directions
+    function currentTheme() {
+      var explicit = document.documentElement.getAttribute('data-theme');
+      if (explicit) return explicit;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function toggleTheme() {
+      var next = currentTheme() === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+    }
+    var b1 = document.getElementById('themeBtn');
+    var b2 = document.getElementById('themeBtnMobile');
+    if (b1) b1.addEventListener('click', toggleTheme);
+    if (b2) b2.addEventListener('click', toggleTheme);
+
+    // Scroll-spy for the sidebar TOC
+    var links = Array.prototype.slice.call(document.querySelectorAll('.toc a[href^="#"]'));
+    var map = {};
+    links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+    var sections = Array.prototype.slice.call(document.querySelectorAll('section[id]'));
+    if ('IntersectionObserver' in window) {
+      var obs = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            links.forEach(function (l) { l.classList.remove('active'); });
+            var active = map[e.target.id];
+            if (active) active.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-10% 0px -75% 0px', threshold: 0 });
+      sections.forEach(function (s) { obs.observe(s); });
+    }
+
+    // Q&A expand / collapse all
+    var qs = Array.prototype.slice.call(document.querySelectorAll('details.q'));
+    var ea = document.getElementById('expandAll');
+    var ca = document.getElementById('collapseAll');
+    if (ea) ea.addEventListener('click', function () { qs.forEach(function (d) { d.open = true; }); });
+    if (ca) ca.addEventListener('click', function () { qs.forEach(function (d) { d.open = false; }); });
+  })();
+</script>
+</body>
+</html>
