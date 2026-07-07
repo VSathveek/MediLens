@@ -1,0 +1,6 @@
+.venv
+__pycache__/
+*.pyc
+.env
+build_rag.log
+data/.build_checkpoint.npz
