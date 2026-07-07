@@ -195,6 +195,9 @@ function App() {
       <header className="topbar">
         <div className="wordmark">MediLens</div>
         <div className="topbar-actions">
+          <a className="pill pill-ghost" href="/rag-internals.html">
+            How it works
+          </a>
           <button className="pill pill-ghost" onClick={() => setShowSettings((v) => !v)}>
             {showSettings ? 'Hide settings' : 'Settings'}
           </button>
